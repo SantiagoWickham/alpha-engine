@@ -1,0 +1,108 @@
+name: Alpha Engine - Sheet API Health
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sheet-api-health:
+    name: Sheet API health
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Validate required secrets
+        env:
+          ALPHA_SHEET_API_URL: ${{ secrets.ALPHA_SHEET_API_URL }}
+          ALPHA_SHEET_API_TOKEN: ${{ secrets.ALPHA_SHEET_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -z "${ALPHA_SHEET_API_URL:-}" ]; then
+            echo "::error::Missing repository secret ALPHA_SHEET_API_URL"
+            exit 1
+          fi
+          if [ -z "${ALPHA_SHEET_API_TOKEN:-}" ]; then
+            echo "::error::Missing repository secret ALPHA_SHEET_API_TOKEN"
+            exit 1
+          fi
+          echo "Required secrets: PRESENT"
+
+      - name: Call Alpha Sheet API health
+        env:
+          ALPHA_SHEET_API_URL: ${{ secrets.ALPHA_SHEET_API_URL }}
+          ALPHA_SHEET_API_TOKEN: ${{ secrets.ALPHA_SHEET_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          HTTP_CODE="$(
+            curl \
+              --silent \
+              --show-error \
+              --location \
+              --get \
+              --output response.json \
+              --write-out "%{http_code}" \
+              --data-urlencode "action=health" \
+              --data-urlencode "token=${ALPHA_SHEET_API_TOKEN}" \
+              "${ALPHA_SHEET_API_URL}"
+          )"
+
+          echo "HTTP status: ${HTTP_CODE}"
+
+          if [ "${HTTP_CODE}" != "200" ]; then
+            echo "::error::Apps Script returned HTTP ${HTTP_CODE}"
+            exit 1
+          fi
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          path = Path("response.json")
+          try:
+              payload = json.loads(path.read_text(encoding="utf-8"))
+          except Exception as exc:
+              raise SystemExit(f"Response is not valid JSON: {exc}")
+
+          if payload.get("ok") is not True:
+              raise SystemExit(
+                  "Sheet API returned ok=false. "
+                  f"error={payload.get('error')} message={payload.get('message')}"
+              )
+
+          if payload.get("status") != "ok":
+              raise SystemExit(f"Unexpected API status: {payload.get('status')!r}")
+
+          expected_authority = "PYTHON_V13_IDEAL_PLUS_BYMA_TRANSFER"
+          if payload.get("model_authority") != expected_authority:
+              raise SystemExit(
+                  "Unexpected model authority: "
+                  f"{payload.get('model_authority')!r}; expected {expected_authority!r}"
+              )
+
+          api_version = payload.get("api_version", "")
+          if not str(api_version).startswith("V13-"):
+              raise SystemExit(f"Unexpected bridge version: {api_version!r}")
+
+          print("SHEET_API_HEALTH: PASS")
+          print("api_version:", api_version)
+          print("spreadsheet_name:", payload.get("spreadsheet_name"))
+          print("model_authority:", payload.get("model_authority"))
+          print("decision_key:", payload.get("decision_key") or "(empty: expected before cloud publish)")
+          print("model_version:", payload.get("model_version") or "(empty: expected before cloud publish)")
+          print("asof:", payload.get("asof") or "(empty: expected before cloud publish)")
+
+          summary = Path(__import__("os").environ["GITHUB_STEP_SUMMARY"])
+          summary.write_text(
+              "## Alpha Engine Sheet API Health — PASS\n\n"
+              f"- API version: `{api_version}`\n"
+              f"- Sheet: `{payload.get('spreadsheet_name')}`\n"
+              f"- Authority: `{payload.get('model_authority')}`\n"
+              "- Connection: **GitHub Actions → Apps Script API → Google Sheet: OK**\n",
+              encoding="utf-8",
+          )
+          PY
