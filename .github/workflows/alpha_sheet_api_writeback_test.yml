@@ -35,7 +35,7 @@ jobs:
           cat > payload.json <<'JSON'
           {
             "payload": {
-              "decision_key": "CONNECTIVITY_TEST",
+              "decision_key": "CONNECTIVITY_TEST_V2",
               "model_version": "V13_CONNECTIVITY_TEST_ONLY",
               "asof": "2099-01-01",
               "source_of_truth": "GITHUB_ACTIONS_CONNECTIVITY_TEST",
@@ -46,41 +46,36 @@ jobs:
           }
           JSON
 
-          # IMPORTANT:
-          # Do NOT force --request POST together with --location.
-          # --data-binary makes the first request POST automatically.
-          # Apps Script then redirects the ContentService response and curl
-          # must be allowed to follow that redirect normally.
+          # Apps Script ContentService responds from /exec with a redirect.
+          # The doPost has already executed before that redirect is returned.
+          # We deliberately DO NOT follow it. We verify the write independently
+          # in the next step using the already-proven GET endpoint.
           HTTP_CODE="$(
             curl \
               --silent \
               --show-error \
-              --location \
               --header "Content-Type: application/json" \
-              --output write_response.json \
+              --output /dev/null \
               --write-out "%{http_code}" \
               --data-binary @payload.json \
               "${ALPHA_SHEET_API_URL}?action=decision_state_replace&token=${ALPHA_SHEET_API_TOKEN}"
           )"
 
-          echo "HTTP status: ${HTTP_CODE}"
-          cat write_response.json
-          echo
+          echo "Initial Apps Script POST status: ${HTTP_CODE}"
 
-          if [ "${HTTP_CODE}" != "200" ]; then
-            echo "::error::Apps Script write returned HTTP ${HTTP_CODE}"
-            exit 1
-          fi
+          case "${HTTP_CODE}" in
+            200|201|202|204|301|302|303|307|308)
+              echo "POST accepted by Apps Script endpoint."
+              ;;
+            *)
+              echo "::error::Unexpected initial Apps Script POST status ${HTTP_CODE}"
+              exit 1
+              ;;
+          esac
 
-          python - <<'PY'
-          import json
-          p=json.load(open("write_response.json", encoding="utf-8"))
-          if p.get("ok") is not True:
-              raise SystemExit(f"Write failed: {p}")
-          print("WRITE: PASS")
-          PY
+          sleep 2
 
-      - name: Read decision state back
+      - name: Verify write by independent GET readback
         env:
           ALPHA_SHEET_API_URL: ${{ secrets.ALPHA_SHEET_API_URL }}
           ALPHA_SHEET_API_TOKEN: ${{ secrets.ALPHA_SHEET_API_TOKEN }}
@@ -88,56 +83,66 @@ jobs:
         run: |
           set -euo pipefail
 
-          curl \
-            --silent \
-            --show-error \
-            --location \
-            --get \
-            --output read_response.json \
-            --data-urlencode "action=decision_state" \
-            --data-urlencode "token=${ALPHA_SHEET_API_TOKEN}" \
-            "${ALPHA_SHEET_API_URL}"
+          HTTP_CODE="$(
+            curl \
+              --silent \
+              --show-error \
+              --location \
+              --get \
+              --output read_response.json \
+              --write-out "%{http_code}" \
+              --data-urlencode "action=decision_state" \
+              --data-urlencode "token=${ALPHA_SHEET_API_TOKEN}" \
+              "${ALPHA_SHEET_API_URL}"
+          )"
+
+          echo "Readback HTTP status: ${HTTP_CODE}"
+          test "${HTTP_CODE}" = "200" || { echo "::error::Readback HTTP ${HTTP_CODE}"; exit 1; }
 
           python - <<'PY'
           import json
-          from pathlib import Path
           import os
+          from pathlib import Path
 
-          p=json.load(open("read_response.json", encoding="utf-8"))
+          p = json.load(open("read_response.json", encoding="utf-8"))
           if p.get("ok") is not True:
-              raise SystemExit(f"Readback failed: {p}")
+              raise SystemExit(f"Readback API returned failure: {p}")
 
-          rows=p.get("rows") or []
-          if not rows:
-              raise SystemExit("Readback returned no decision_state rows")
-
+          rows = p.get("rows") or []
           raw = None
           for row in rows:
               if len(row) >= 2 and str(row[0]) == "latest_runtime":
-                  raw=row[1]
+                  raw = row[1]
                   break
 
           if raw is None:
-              raise SystemExit(f"latest_runtime row not found. rows={rows[:3]}")
+              raise SystemExit(f"latest_runtime row not found. First rows: {rows[:3]}")
 
-          state=json.loads(raw)
-          if state.get("decision_key") != "CONNECTIVITY_TEST":
-              raise SystemExit(f"Unexpected decision_key: {state.get('decision_key')!r}")
+          state = json.loads(raw)
+
+          expected = "CONNECTIVITY_TEST_V2"
+          actual = state.get("decision_key")
+          if actual != expected:
+              raise SystemExit(
+                  "POST endpoint was reached but write was NOT verified. "
+                  f"Expected decision_key={expected!r}, got {actual!r}."
+              )
+
           if state.get("test_only") is not True:
-              raise SystemExit("Readback payload is not marked test_only=true")
+              raise SystemExit("Readback payload is missing test_only=true")
 
+          print("POST_ACCEPTED: PASS")
           print("READBACK: PASS")
-          print("decision_key:", state.get("decision_key"))
-          print("model_version:", state.get("model_version"))
-          print("source_of_truth:", state.get("source_of_truth"))
+          print("decision_key:", actual)
           print("SHEET_API_WRITEBACK: PASS")
 
           Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text(
               "## Alpha Engine Sheet API Writeback — PASS\n\n"
+              "- Initial Apps Script POST: **accepted**\n"
+              "- Independent GET readback: **verified**\n"
               "- GitHub → Sheet write: **OK**\n"
-              "- Sheet → GitHub readback: **OK**\n"
-              "- Payload: `CONNECTIVITY_TEST`\n"
+              "- Sheet → GitHub read: **OK**\n"
               "- Real operations/cash/positions touched: **NO**\n",
-              encoding="utf-8"
+              encoding="utf-8",
           )
           PY
