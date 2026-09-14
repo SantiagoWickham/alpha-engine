@@ -46,12 +46,16 @@ jobs:
           }
           JSON
 
+          # IMPORTANT:
+          # Do NOT force --request POST together with --location.
+          # --data-binary makes the first request POST automatically.
+          # Apps Script then redirects the ContentService response and curl
+          # must be allowed to follow that redirect normally.
           HTTP_CODE="$(
             curl \
               --silent \
               --show-error \
               --location \
-              --request POST \
               --header "Content-Type: application/json" \
               --output write_response.json \
               --write-out "%{http_code}" \
