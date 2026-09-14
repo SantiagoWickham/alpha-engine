@@ -1,10 +1,19 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 $Root = 'C:\Users\santi\OneDrive\Escritorio\ALPHA_ENGINE_V12_RETURN_FIRST'
 $V13 = Join-Path $Root 'ALPHA_ENGINE_V13_RETURN_FIRST_MULTI_HORIZON'
 $V12 = Join-Path $Root 'ALPHA_ENGINE_V12_RETURN_FIRST_STARTER'
 $env:PYTHONPATH = "$($V13)\src;$($V12)\src"
 $env:MMM_SEC_USER_AGENT = 'AlphaEngineV13 research github.com/SantiagoWickham/alpha-engine'
 
+# ANCHOR_RUNTIME_HOTFIX_CALL_V1
+Write-Host "
+============================================================"
+Write-Host "CLOUD DATA PORTABILITY - YAHOO ANCHOR OVERLAP"
+Write-Host "============================================================"
+python (Join-Path $PSScriptRoot 'patch_anchor_overlap.py')
+if ($LASTEXITCODE -ne 0) {
+    throw 'Cloud anchor portability patch failed.'
+}
 function Run-Step([string]$Name,[string]$Script) {
   Write-Host "`n============================================================"
   Write-Host $Name
@@ -27,3 +36,4 @@ if ($LASTEXITCODE -ne 0) { throw 'BYMA reference input failed' }
 Run-Step 'BYMA TRANSFER - CURRENT GEOMETRY' 'RUN_V13_PHASE5H_V4_EXECUTABLE.ps1'
 
 Write-Host "`nCLOUD_PRODUCTION_ENGINE: PASS"
+
