@@ -1,0 +1,139 @@
+name: Alpha Engine - Sheet API Writeback Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sheet-api-writeback:
+    name: Sheet API writeback test
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Validate required secrets
+        env:
+          ALPHA_SHEET_API_URL: ${{ secrets.ALPHA_SHEET_API_URL }}
+          ALPHA_SHEET_API_TOKEN: ${{ secrets.ALPHA_SHEET_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${ALPHA_SHEET_API_URL:-}" || { echo "::error::Missing ALPHA_SHEET_API_URL"; exit 1; }
+          test -n "${ALPHA_SHEET_API_TOKEN:-}" || { echo "::error::Missing ALPHA_SHEET_API_TOKEN"; exit 1; }
+          echo "Required secrets: PRESENT"
+
+      - name: Write harmless test decision state
+        env:
+          ALPHA_SHEET_API_URL: ${{ secrets.ALPHA_SHEET_API_URL }}
+          ALPHA_SHEET_API_TOKEN: ${{ secrets.ALPHA_SHEET_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > payload.json <<'JSON'
+          {
+            "payload": {
+              "decision_key": "CONNECTIVITY_TEST",
+              "model_version": "V13_CONNECTIVITY_TEST_ONLY",
+              "asof": "2099-01-01",
+              "source_of_truth": "GITHUB_ACTIONS_CONNECTIVITY_TEST",
+              "model_authority": "PYTHON_V13_IDEAL_PLUS_BYMA_TRANSFER",
+              "test_only": true,
+              "note": "Harmless connectivity test. Not an investment decision."
+            }
+          }
+          JSON
+
+          HTTP_CODE="$(
+            curl \
+              --silent \
+              --show-error \
+              --location \
+              --request POST \
+              --header "Content-Type: application/json" \
+              --output write_response.json \
+              --write-out "%{http_code}" \
+              --data-binary @payload.json \
+              "${ALPHA_SHEET_API_URL}?action=decision_state_replace&token=${ALPHA_SHEET_API_TOKEN}"
+          )"
+
+          echo "HTTP status: ${HTTP_CODE}"
+          cat write_response.json
+          echo
+
+          if [ "${HTTP_CODE}" != "200" ]; then
+            echo "::error::Apps Script write returned HTTP ${HTTP_CODE}"
+            exit 1
+          fi
+
+          python - <<'PY'
+          import json
+          p=json.load(open("write_response.json", encoding="utf-8"))
+          if p.get("ok") is not True:
+              raise SystemExit(f"Write failed: {p}")
+          print("WRITE: PASS")
+          PY
+
+      - name: Read decision state back
+        env:
+          ALPHA_SHEET_API_URL: ${{ secrets.ALPHA_SHEET_API_URL }}
+          ALPHA_SHEET_API_TOKEN: ${{ secrets.ALPHA_SHEET_API_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl \
+            --silent \
+            --show-error \
+            --location \
+            --get \
+            --output read_response.json \
+            --data-urlencode "action=decision_state" \
+            --data-urlencode "token=${ALPHA_SHEET_API_TOKEN}" \
+            "${ALPHA_SHEET_API_URL}"
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          import os
+
+          p=json.load(open("read_response.json", encoding="utf-8"))
+          if p.get("ok") is not True:
+              raise SystemExit(f"Readback failed: {p}")
+
+          rows=p.get("rows") or []
+          if not rows:
+              raise SystemExit("Readback returned no decision_state rows")
+
+          raw = None
+          for row in rows:
+              if len(row) >= 2 and str(row[0]) == "latest_runtime":
+                  raw=row[1]
+                  break
+
+          if raw is None:
+              raise SystemExit(f"latest_runtime row not found. rows={rows[:3]}")
+
+          state=json.loads(raw)
+          if state.get("decision_key") != "CONNECTIVITY_TEST":
+              raise SystemExit(f"Unexpected decision_key: {state.get('decision_key')!r}")
+          if state.get("test_only") is not True:
+              raise SystemExit("Readback payload is not marked test_only=true")
+
+          print("READBACK: PASS")
+          print("decision_key:", state.get("decision_key"))
+          print("model_version:", state.get("model_version"))
+          print("source_of_truth:", state.get("source_of_truth"))
+          print("SHEET_API_WRITEBACK: PASS")
+
+          Path(os.environ["GITHUB_STEP_SUMMARY"]).write_text(
+              "## Alpha Engine Sheet API Writeback — PASS\n\n"
+              "- GitHub → Sheet write: **OK**\n"
+              "- Sheet → GitHub readback: **OK**\n"
+              "- Payload: `CONNECTIVITY_TEST`\n"
+              "- Real operations/cash/positions touched: **NO**\n",
+              encoding="utf-8"
+          )
+          PY
