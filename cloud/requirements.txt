@@ -1,0 +1,15 @@
+numpy>=2.0
+pandas>=2.2
+pyarrow>=17
+scipy>=1.14
+scikit-learn>=1.6
+joblib>=1.2
+requests>=2.32
+python-dateutil>=2.9
+pytest>=8.3
+lxml>=5.3
+beautifulsoup4>=4.12
+html5lib>=1.1
+yfinance>=0.2.54
+openpyxl>=3.1
+exchange-calendars>=4.7
